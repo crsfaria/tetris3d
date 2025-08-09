@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Tetris 3D – Three.js (single-file)</title>
+  <style>
+    html, body { height: 100%; margin: 0; background: radial-gradient(1000px 500px at 50% -10%, #1b1b1f, #0c0c0f); font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto; color: #fff; }
+    #app { position: relative; height: 100%; }
+    #hud { position: absolute; inset: 0; pointer-events: none; }
+    .panel { pointer-events: auto; position: absolute; top: 16px; left: 16px; background: rgba(0,0,0,.55); border: 1px solid rgba(255,255,255,.1); border-radius: 16px; padding: 12px 14px; box-shadow: 0 8px 30px rgba(0,0,0,.35); }
+    .title { font-weight: 700; letter-spacing: .5px; font-size: 18px; }
+    .grid { margin-top: 8px; display: grid; grid-template-columns: auto auto; gap: 6px 14px; font-size: 13px; }
+    .kbd { margin-top: 8px; opacity: .85; font-size: 12px; line-height: 1.4; }
+    .pill { position: absolute; top: 16px; right: 16px; pointer-events: auto; background: rgba(0,0,0,.6); border: 1px solid rgba(255,255,255,.1); border-radius: 16px; padding: 12px; box-shadow: 0 8px 30px rgba(0,0,0,.35); }
+    .next { display: grid; grid-template-columns: repeat(4, 14px); grid-auto-rows: 14px; gap: 3px; }
+    .cell { width: 14px; height: 14px; background: #222; border-radius: 3px; }
+    .overlay { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; }
+    .overlay.show { display: flex; }
+    .card { background: rgba(0,0,0,.65); border: 1px solid rgba(255,255,255,.12); padding: 18px 22px; border-radius: 18px; box-shadow: 0 10px 40px rgba(0,0,0,.45); text-align: center; }
+    button { background: #fff; color: #121212; border: 0; padding: 8px 14px; border-radius: 999px; font-weight: 700; cursor: pointer; }
+    #footer { position: absolute; left: 50%; transform: translateX(-50%); bottom: 16px; }
+    canvas { display:block; width:100%; height:100% }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <canvas id="scene"></canvas>
+    <div id="hud">
+      <div class="panel">
+        <div class="title">Tetris 3D</div>
+        <div class="grid">
+          <div>Pontos</div><div id="score">0</div>
+          <div>Nível</div><div id="level">1</div>
+          <div>Linhas</div><div id="lines">0</div>
+        </div>
+        <div class="kbd">← → mover • ↑ girar • ↓ acelerar • Espaço descer • P pausar • R reiniciar</div>
+      </div>
+      <div class="pill">
+        <div style="font-size:12px;opacity:.8;margin-bottom:6px">Próxima</div>
+        <div id="next" class="next"></div>
+      </div>
+      <div id="overlay" class="overlay">
+        <div class="card">
+          <div id="overlayTitle" style="font-size:22px;font-weight:800">Pausado</div>
+          <div id="overlayHint" style="margin:6px 0 12px;font-size:13px;opacity:.85">Pressione P para continuar</div>
+          <button id="btnReset">Reiniciar</button>
+        </div>
+      </div>
+      <div id="footer"><button id="btnResetBottom">Reiniciar</button></div>
+    </div>
+  </div>
+
+  <script type="module">
+    import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
+    import { OrbitControls } from 'https://unpkg.com/three@0.160.0/examples/jsm/controls/OrbitControls.js';
+
+    // ===== TETRIS CONFIG =====
+    const COLS = 10;
+    const ROWS = 20;
+    const BLOCK = 0.95;
+    const DROP_START = 800;
+
+    const TETROMINOES = {
+      I: { color: '#00f0f0', r: [ [[1,1,1,1]], [[1],[1],[1],[1]] ] },
+      J: { color: '#0000f0', r: [ [[1,0,0],[1,1,1]], [[1,1],[1,0],[1,0]], [[1,1,1],[0,0,1]], [[0,1],[0,1],[1,1]] ] },
+      L: { color: '#f0a000', r: [ [[0,0,1],[1,1,1]], [[1,0],[1,0],[1,1]], [[1,1,1],[1,0,0]], [[1,1],[0,1],[0,1]] ] },
+      O: { color: '#f0f000', r: [ [[1,1],[1,1]] ] },
+      S: { color: '#00f000', r: [ [[0,1,1],[1,1,0]], [[1,0],[1,1],[0,1]] ] },
+      T: { color: '#a000f0', r: [ [[0,1,0],[1,1,1]], [[1,0],[1,1],[1,0]], [[1,1,1],[0,1,0]], [[0,1],[1,1],[0,1]] ] },
+      Z: { color: '#f00000', r: [ [[1,1,0],[0,1,1]], [[0,1],[1,1],[1,0]] ] }
+    };
+    const KEYS = Object.keys(TETROMINOES);
+
+    const emptyBoard = () => Array.from({length: ROWS}, () => Array(COLS).fill(null));
+    function randomPiece(){
+      const k = KEYS[Math.floor(Math.random()*KEYS.length)];
+      const { r, color } = TETROMINOES[k];
+      const rot = 0; const shape = r[rot];
+      const x = Math.floor((COLS - shape[0].length)/2); const y = 0;
+      return { k, r, rot, shape, x, y, color };
+    }
+    const rotate = (p, dir=1) => { const c=p.r.length; const n=(p.rot+dir+c)%c; return { ...p, rot:n, shape:p.r[n] }; };
+    function collides(board, piece, offX=0, offY=0){
+      const { shape, x, y } = piece;
+      for (let r=0; r<shape.length; r++){
+        for (let c=0; c<shape[r].length; c++){
+          if (!shape[r][c]) continue;
+          const nx = x + c + offX, ny = y + r + offY;
+          if (nx < 0 || nx >= COLS || ny >= ROWS) return true;
+          if (ny >= 0 && board[ny][nx]) return true;
+        }
+      }
+      return false;
+    }
+    function merge(board, piece){
+      const b = board.map(row => row.slice());
+      const { shape, x, y, color } = piece;
+      for (let r=0; r<shape.length; r++){
+        for (let c=0; c<shape[r].length; c++){
+          if (shape[r][c]){
+            const nx = x + c, ny = y + r;
+            if (ny >= 0) b[ny][nx] = color;
+          }
+        }
+      }
+      return b;
+    }
+    function clearLines(board){
+      const nb=[]; let cleared=0;
+      for(let r=0;r<ROWS;r++){ const full = board[r].every(v=>v); if(!full) nb.push(board[r]); else cleared++; }
+      while(nb.length<ROWS) nb.unshift(Array(COLS).fill(null));
+      return { board: nb, cleared };
+    }
+
+    // ===== THREE.JS SCENE =====
+    const canvas = document.getElementById('scene');
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias:true, alpha:true });
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(50, 2, 0.1, 100);
+    camera.position.set(0, 0, 26);
+
+    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+    const dir = new THREE.DirectionalLight(0xffffff, 0.9); dir.position.set(6,10,10); dir.castShadow=true; scene.add(dir);
+    const spot = new THREE.SpotLight(0xffffff, 0.6, 0, Math.PI/6, 0.5); spot.position.set(-8,12,8); scene.add(spot);
+
+    const boardGroup = new THREE.Group(); scene.add(boardGroup);
+
+    const plateGeo = new THREE.BoxGeometry(COLS+1, ROWS+1, 0.5);
+    const plateMat = new THREE.MeshStandardMaterial({ color: 0x111217, metalness:0.2, roughness:0.85 });
+    const plate = new THREE.Mesh(plateGeo, plateMat); plate.position.set(0,0,-0.6); plate.receiveShadow=true; scene.add(plate);
+
+    const gridGroup = new THREE.Group(); scene.add(gridGroup);
+    const lineMat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent:true, opacity:0.35 });
+    for(let x=0; x<=COLS; x++){
+      const pts = [ new THREE.Vector3(x-COLS/2, -ROWS/2, -0.51), new THREE.Vector3(x-COLS/2, ROWS/2, -0.51) ];
+      const geo = new THREE.BufferGeometry().setFromPoints(pts);
+      gridGroup.add(new THREE.Line(geo, lineMat));
+    }
+    for(let y=0; y<=ROWS; y++){
+      const pts = [ new THREE.Vector3(-COLS/2, y-ROWS/2, -0.51), new THREE.Vector3(COLS/2, y-ROWS/2, -0.51) ];
+      const geo = new THREE.BufferGeometry().setFromPoints(pts);
+      gridGroup.add(new THREE.Line(geo, lineMat));
+    }
+
+    const cubeGeo = new THREE.BoxGeometry(BLOCK, BLOCK, BLOCK);
+    const matCache = new Map();
+    const matFor = (hex) => { if(!matCache.has(hex)) matCache.set(hex, new THREE.MeshStandardMaterial({ color:new THREE.Color(hex), metalness:0.1, roughness:0.5 })); return matCache.get(hex); };
+    const toMesh = (x,y,color) => { const m=new THREE.Mesh(cubeGeo, matFor(color)); m.castShadow=true; m.receiveShadow=true; m.position.set(x - COLS/2 + 0.5, ROWS/2 - y - 0.5, 0); return m; };
+
+    const activeGroup = new THREE.Group(); scene.add(activeGroup);
+    const ghostGroup = new THREE.Group(); scene.add(ghostGroup);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enablePan = false; controls.minPolarAngle = Math.PI/2.5; controls.maxPolarAngle = Math.PI/2 + 0.2; controls.minDistance = 18; controls.maxDistance = 32;
+
+    // ===== GAME STATE =====
+    let board = emptyBoard();
+    let piece = randomPiece();
+    let nextPiece = randomPiece();
+    let score = 0, level = 1, lines = 0;
+    let paused = false, over = false;
+
+    const $ = (id) => document.getElementById(id);
+    const $score = $('score'); const $level = $('level'); const $lines = $('lines');
+    const $next = $('next'); const $overlay = $('overlay');
+    const $overlayTitle = $('overlayTitle'); const $overlayHint = $('overlayHint');
+    const $btnReset = $('btnReset'); const $btnResetBottom = $('btnResetBottom');
+
+    for(let i=0;i<16;i++){ const d=document.createElement('div'); d.className='cell'; $next.appendChild(d); }
+
+    function updateNextPreview(){
+      const cells = $next.children;
+      for(let i=0;i<16;i++){
+        const r=Math.floor(i/4), c=i%4;
+        const filled = (nextPiece.shape[r] && nextPiece.shape[r][c]) ? nextPiece.color : null;
+        cells[i].style.background = filled ? nextPiece.color : '#222';
+      }
+    }
+
+    function setHUD(){ $score.textContent=score; $level.textContent=level; $lines.textContent=lines; updateNextPreview(); }
+
+    function reset(){ board=emptyBoard(); piece=randomPiece(); nextPiece=randomPiece(); score=0; level=1; lines=0; paused=false; over=false; setHUD(); $overlay.classList.remove('show'); renderBoard(); }
+
+    function renderBoard(){
+      // Settled
+      boardGroup.clear();
+      for(let y=0;y<ROWS;y++) for(let x=0;x<COLS;x++){ const color=board[y][x]; if(color) boardGroup.add(toMesh(x,y,color)); }
+      // Active
+      activeGroup.clear();
+      if(piece){
+        piece.shape.forEach((row,r)=> row.forEach((v,c)=>{ if(!v) return; const px=piece.x+c, py=piece.y+r; activeGroup.add(toMesh(px,py,piece.color)); }));
+      }
+      // Ghost
+      ghostGroup.clear();
+      if(piece){
+        let dy=0; while(!collides(board, piece, 0, dy+1)) dy++; const gy=piece.y+dy;
+        const ghostMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(piece.color), wireframe:true, transparent:true, opacity:0.35 });
+        piece.shape.forEach((row,r)=> row.forEach((v,c)=>{ if(!v) return; const px=piece.x+c, py=gy+r; const m=new THREE.Mesh(cubeGeo, ghostMat); m.position.set(px - COLS/2 + 0.5, ROWS/2 - py - 0.5, 0.02); ghostGroup.add(m); }));
+      }
+    }
+
+    function tryMove(dx, dy){
+      if(!piece) return;
+      const moved = { ...piece, x: piece.x + dx, y: piece.y + dy };
+      if(!collides(board, moved)){ piece = moved; renderBoard(); }
+      else if(dy>0){
+        board = merge(board, piece);
+        const { board: b2, cleared } = clearLines(board); board=b2;
+        if(cleared>0){
+          lines += cleared; const add=[0,100,300,500,800][cleared]||0; score += add*level; if((lines)/10 >= level) level++;
+          setHUD();
+        }
+        const incoming=nextPiece; const fresh=randomPiece();
+        piece=incoming; nextPiece=fresh; updateNextPreview();
+        if(collides(board, piece)){ over=true; paused=true; $overlayTitle.textContent='Game Over'; $overlayHint.textContent='Pressione R para reiniciar'; $overlay.classList.add('show'); }
+        renderBoard();
+      }
+    }
+
+    function tryRotate(){ if(!piece) return; const rotated=rotate(piece,1); const kicks=[0,-1,1,-2,2]; for(const k of kicks){ if(!collides(board, rotated, k, 0)){ piece={...rotated, x:rotated.x+k}; renderBoard(); return; } } }
+    function hardDrop(){ if(!piece) return; let dy=0; while(!collides(board, piece, 0, dy+1)) dy++; if(dy>0){ piece.y += dy; } tryMove(0,1); }
+
+    window.addEventListener('keydown', (e)=>{
+      if(over && e.key.toLowerCase()!=='r') return;
+      switch(e.key){
+        case 'ArrowLeft': if(!paused) tryMove(-1,0); break;
+        case 'ArrowRight': if(!paused) tryMove(1,0); break;
+        case 'ArrowDown': if(!paused) tryMove(0,1); break;
+        case 'ArrowUp': if(!paused) tryRotate(); break;
+        case ' ': e.preventDefault(); if(!paused) hardDrop(); break;
+        case 'p': case 'P': paused = !paused; if(paused) { $overlayTitle.textContent='Pausado'; $overlayHint.textContent='Pressione P para continuar'; $overlay.classList.add('show'); } else { $overlay.classList.remove('show'); } break;
+        case 'r': case 'R': reset(); break;
+      }
+    });
+
+    document.getElementById('btnReset').addEventListener('click', reset);
+    document.getElementById('btnResetBottom').addEventListener('click', reset);
+
+    // Gravity loop
+    let acc=0; let last=performance.now();
+    function tick(now){
+      const dt = now - last; last = now;
+      if(!paused && !over){ acc += dt; const speed = Math.max(120, DROP_START - (level-1)*60); if(acc >= speed){ tryMove(0,1); acc = 0; } }
+      controls.update();
+      renderer.render(scene, camera);
+      requestAnimationFrame(tick);
+    }
+
+    function resize(){
+      const p = renderer.domElement.parentElement;
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
+      renderer.setSize(p.clientWidth, p.clientHeight, false);
+      camera.aspect = p.clientWidth / p.clientHeight; camera.updateProjectionMatrix();
+    }
+    window.addEventListener('resize', resize);
+
+    // Init
+    setHUD(); updateNextPreview(); renderBoard(); resize(); requestAnimationFrame(tick);
+  </script>
+</body>
+</html>
